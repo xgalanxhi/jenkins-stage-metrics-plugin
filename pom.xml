@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.jenkins-ci.plugins</groupId>
+    <artifactId>plugin</artifactId>
+    <version>4.64</version>
+    <relativePath />
+  </parent>
+
+  <groupId>io.jenkins.plugins</groupId>
+  <artifactId>demo</artifactId>
+  <version>1.0-SNAPSHOT</version>
+  <packaging>hpi</packaging>
+
+  <name>Stage Metrics Plugin</name>
+  <url>https://github.com/jenkinsci/demo-plugin</url>
+
+  <properties>
+    <jenkins.version>2.426.3</jenkins.version>
+    <hpiPlugin.version>3.44</hpiPlugin.version>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>io.jenkins.tools.bom</groupId>
+        <artifactId>bom-2.426.x</artifactId>
+        <version>3208.vb_21177d4b_cd9</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.ow2.asm</groupId>
+        <artifactId>asm</artifactId>
+        <version>9.7</version>
+      </dependency>
+      <dependency>
+        <groupId>org.ow2.asm</groupId>
+        <artifactId>asm-commons</artifactId>
+        <version>9.7</version>
+      </dependency>
+      <dependency>
+        <groupId>org.ow2.asm</groupId>
+        <artifactId>asm-tree</artifactId>
+        <version>9.7</version>
+      </dependency>
+      <dependency>
+        <groupId>org.ow2.asm</groupId>
+        <artifactId>asm-util</artifactId>
+        <version>9.7</version>
+      </dependency>
+      <dependency>
+        <groupId>org.ow2.asm</groupId>
+        <artifactId>asm-analysis</artifactId>
+        <version>9.7</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <!-- Jenkins Pipeline API dependencies -->
+    <dependency>
+      <groupId>org.jenkins-ci.plugins.workflow</groupId>
+      <artifactId>workflow-api</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.jenkins-ci.plugins.workflow</groupId>
+      <artifactId>workflow-step-api</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.jenkins-ci.plugins.workflow</groupId>
+      <artifactId>workflow-support</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.jenkins-ci.plugins.workflow</groupId>
+      <artifactId>workflow-cps</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.jenkins-ci.plugins.workflow</groupId>
+      <artifactId>workflow-job</artifactId>
+    </dependency>
+    <!-- https://mvnrepository.com/artifact/org.jenkins-ci.plugins/pipeline-stage-step -->
+    <dependency>
+      <groupId>org.jenkins-ci.plugins</groupId>
+      <artifactId>pipeline-stage-step</artifactId>
+    </dependency>
+    <!-- Jackson for JSON serialization -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>2.15.2</version>
+    </dependency>
+
+    <dependency>
+      <groupId>io.jenkins.plugins</groupId>
+      <artifactId>asm-api</artifactId>
+      <version>9.7-33.v4d23ef79fcc8</version>
+    </dependency>
+  </dependencies>
+
+  <repositories>
+    <repository>
+      <id>repo.jenkins-ci.org</id>
+      <url>https://repo.jenkins-ci.org/public/</url>
+    </repository>
+    <repository>
+      <id>repo.jenkins-ci.org2</id>
+      <url>https://repo.jenkins-ci.org/releases/</url>
+    </repository>
+
+  </repositories>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.jenkins-ci.tools</groupId>
+        <artifactId>maven-hpi-plugin</artifactId>
+        <version>${hpiPlugin.version}</version>
+        <extensions>true</extensions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <source>16</source>
+          <target>16</target>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>
