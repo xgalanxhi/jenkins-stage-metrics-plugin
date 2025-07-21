@@ -40,6 +40,20 @@ public class StageMetricsConfiguration  extends GlobalConfiguration {
         this.lastError = lastError;
         save(); // Save to disk so it persists across restarts
     }
+    
+    public void appendToLastError(String message) {
+        if (this.lastError == null || this.lastError.isEmpty()) {
+            this.lastError = message;
+        } else {
+            this.lastError += "\n" + message;
+        }
+        save();
+    }
+    
+    public void clearLastError() {
+        this.lastError = "";
+        save();
+    }
     public boolean isTrustSelfSigned() {
         return trustSelfSigned;
     }

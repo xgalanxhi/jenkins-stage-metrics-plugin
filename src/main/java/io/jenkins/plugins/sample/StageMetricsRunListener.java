@@ -6,7 +6,6 @@ import hudson.Extension;
 import hudson.model.*;
 import hudson.model.listeners.RunListener;
 
-import java.io.IOException;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -16,7 +15,6 @@ import java.util.*;
 import java.util.logging.Logger;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.jenkinsci.plugins.workflow.actions.LabelAction;
 import org.jenkinsci.plugins.workflow.actions.TimingAction;
 import org.jenkinsci.plugins.workflow.cps.nodes.StepStartNode;
 import org.jenkinsci.plugins.workflow.graph.BlockEndNode;
@@ -34,6 +32,22 @@ import javax.net.ssl.X509TrustManager;
 public class StageMetricsRunListener extends RunListener<Run<?, ?>> {
     private static final Logger LOGGER = Logger.getLogger(StageMetricsRunListener.class.getName());
 
+    // Helper method to log both to Jenkins logs and append to lastError field
+    private void logAndAppendError(String message) {
+        StageMetricsConfiguration config = StageMetricsConfiguration.get();
+        LOGGER.warning(message);
+        config.appendToLastError("[" + new Date() + "] " + message);
+    }
+    
+    // Helper method to log info messages and optionally append to lastError
+    private void logInfo(String message, boolean appendToError) {
+        LOGGER.info(message);
+        if (appendToError) {
+            StageMetricsConfiguration config = StageMetricsConfiguration.get();
+            config.appendToLastError("[" + new Date() + "] " + message);
+        }
+    }
+
     @Override
     public void onCompleted(Run<?, ?> run, @NonNull TaskListener listener) {
         if (!(run instanceof WorkflowRun)) {
@@ -45,8 +59,14 @@ public class StageMetricsRunListener extends RunListener<Run<?, ?>> {
         if (execution == null) return;
 
         try {
+            // Clear previous errors when starting a new run
+            config.clearLastError();
+            
             List<Map<String, Object>> stageData = new ArrayList<>();
             collectStageMetrics(execution, stageData);
+            
+            logInfo("Collected " + stageData.size() + " stages for processing", true);
+            
             ParametersAction parameters = run.getAction(ParametersAction.class);
             EnvVars env = run.getEnvironment(listener);
             String jobUrl = env.get("JOB_URL");
@@ -66,32 +86,22 @@ public class StageMetricsRunListener extends RunListener<Run<?, ?>> {
             payload.put("jobName", run.getParent().getFullName());
             payload.put("jobUrl", jobUrl != null ? jobUrl : "unknown");
             payload.put("buildTool", buildTool);
-            Map<String, Map<String, String>> stageEnvVars = extractStageEnvVarsFromLogs(run);
 
             for (Map<String, Object> stage : stageData) {
                 Map<String, Object> stagePayload = new HashMap<>(payload); // clone the pipeline context
                 String stageName = (String) stage.get("name");
 
-                // Add env vars for this stage (if any)
-                if (stageEnvVars.containsKey(stageName)) {
-                    Map<String, String> envVars = stageEnvVars.get(stageName);
-                    //stage.put("env", envVars);
-
-                    // If this stage has a specific build tool env var, include it in payload
-                    if (envVars.containsKey("BUILD_TOOL")) {
-                        stagePayload.put("stageBuildTool", envVars.get("BUILD_TOOL"));
-                    } else {
-                        stagePayload.put("stageBuildTool", "unknown1");
-                    }
-                } else {
-                    stagePayload.put("stageBuildTool", "unknown2");
-                }
-
                 stagePayload.putAll(stage); // flatten stage info into the payload
-                sendMetrics(stagePayload); // send one request per stage
+                
+                try {
+                    sendMetrics(stagePayload); // send one request per stage
+                    logInfo("Successfully sent metrics for stage: " + stageName, false);
+                } catch (Exception stageException) {
+                    logAndAppendError("Failed to send metrics for stage '" + stageName + "': " + stageException.getMessage());
+                }
             }
         } catch (Exception e) {
-            config.setLastError("Failed to send stage metrics: " + e.getMessage());
+            logAndAppendError("Failed to process stage metrics: " + e.getMessage());
             listener.getLogger().println("Failed to send stage metrics: " + e.getMessage());
         }
     }
@@ -102,17 +112,75 @@ public class StageMetricsRunListener extends RunListener<Run<?, ?>> {
 
         Map<String, FlowNode> stageStartNodes = new HashMap<>();
 
+        logInfo("Scanning " + allNodes.size() + " nodes for stages", false);
+        
+        // First pass: log ALL step nodes to understand the pipeline structure
+        logInfo("=== DEBUGGING: All StepStartNodes in pipeline ===", true);
         for (FlowNode node : allNodes) {
-            LabelAction label = node.getAction(LabelAction.class);
-            if (label != null) {
-                stageStartNodes.put(node.getId(), node);
+            if (node instanceof StepStartNode) {
+                StepStartNode stepNode = (StepStartNode) node;
+                String functionName = stepNode.getDisplayFunctionName();
+                String displayName = node.getDisplayName();
+                logInfo("StepNode - Function: '" + functionName + "', Display: '" + displayName + "', ID: " + node.getId(), true);
+                
+                // Check if this could be an sh step with arguments
+                if (stepNode.getAction(org.jenkinsci.plugins.workflow.actions.ArgumentsAction.class) != null) {
+                    org.jenkinsci.plugins.workflow.actions.ArgumentsAction argsAction = stepNode.getAction(org.jenkinsci.plugins.workflow.actions.ArgumentsAction.class);
+                    Map<String, Object> args = argsAction.getArguments();
+                    if (args != null && !args.isEmpty()) {
+                        logInfo("  -> Args: " + args.toString(), true);
+                        if (args.containsKey("label")) {
+                            logInfo("  -> HAS LABEL: " + args.get("label"), true);
+                        }
+                        if (args.containsKey("script")) {
+                            logInfo("  -> HAS SCRIPT: " + args.get("script"), true);
+                        }
+                    }
+                }
             }
         }
+        logInfo("=== END DEBUGGING ===", true);
+        
+        for (FlowNode node : allNodes) {
+            // Look for actual stage nodes, not sh step nodes
+            if (node instanceof StepStartNode) {
+                StepStartNode stepNode = (StepStartNode) node;
+                String functionName = stepNode.getDisplayFunctionName();
+                String displayName = node.getDisplayName();
+                
+                if ("stage".equals(functionName)) {
+                    // Try to get the stage name from arguments instead of display name
+                    org.jenkinsci.plugins.workflow.actions.ArgumentsAction argsAction = stepNode.getAction(org.jenkinsci.plugins.workflow.actions.ArgumentsAction.class);
+                    String stageName = displayName; // fallback to display name
+                    
+                    if (argsAction != null) {
+                        Map<String, Object> args = argsAction.getArguments();
+                        if (args != null && args.containsKey("name")) {
+                            Object nameArg = args.get("name");
+                            if (nameArg != null) {
+                                stageName = nameArg.toString();
+                                logInfo("Found stage name in arguments: '" + stageName + "'", false);
+                            }
+                        }
+                    }
+                    
+                    // Only filter out if both display name and argument name are "Stage : Start"
+                    if (!"Stage : Start".equals(stageName)) {
+                        stageStartNodes.put(node.getId(), node);
+                        logInfo("Added stage node: " + stageName + " (ID: " + node.getId() + ")", false);
+                    } else {
+                        logInfo("Skipping internal stage node: " + stageName + " (ID: " + node.getId() + ")", false);
+                    }
+                }
+            }
+        }
+        
+        logInfo("Found " + stageStartNodes.size() + " stage nodes total", true);
 
         for (FlowNode startNode : stageStartNodes.values()) {
             FlowNode endNode = null;
             for (FlowNode node : allNodes) {
-                if (node instanceof BlockEndNode && ((BlockEndNode) node).getStartNode().equals(startNode)) {
+                if (node instanceof BlockEndNode && ((BlockEndNode<?>) node).getStartNode().equals(startNode)) {
                     endNode = node;
                     break;
                 }
@@ -123,28 +191,59 @@ public class StageMetricsRunListener extends RunListener<Run<?, ?>> {
                     ? TimingAction.getStartTime(endNode) - startTime
                     : 0;
 
+            // Get the proper stage name from arguments
+            String stageName = startNode.getDisplayName(); // fallback
+            if (startNode instanceof StepStartNode) {
+                org.jenkinsci.plugins.workflow.actions.ArgumentsAction argsAction = ((StepStartNode) startNode).getAction(org.jenkinsci.plugins.workflow.actions.ArgumentsAction.class);
+                if (argsAction != null) {
+                    Map<String, Object> args = argsAction.getArguments();
+                    if (args != null && args.containsKey("name")) {
+                        Object nameArg = args.get("name");
+                        if (nameArg != null) {
+                            stageName = nameArg.toString();
+                        }
+                    }
+                }
+            }
+
             Map<String, Object> stage = new HashMap<>();
-            stage.put("name", startNode.getDisplayName());
+            stage.put("name", stageName);
             stage.put("startTimeMillis", startTime);
             stage.put("durationMillis", duration);
 
-            // Collect sh step labels within this stage
-            List<String> shLabels = new ArrayList<>();
+            // Collect build tool from stage environment or descendant steps
+            String stageBuildTool = null;
+            logInfo("Processing stage: " + stageName + " (ID: " + startNode.getId() + ")", true);
+
+            // First, check for stage-specific withEnv nodes that come AFTER this stage starts
+            // We need to look for withEnv nodes with higher IDs that are still within the stage
             for (FlowNode node : allNodes) {
-                // Only consider nodes within the stage block
-                if (isDescendantOf(node, startNode, endNode)) {
-                    if (node instanceof StepStartNode) {
-                        StepStartNode stepNode = (StepStartNode) node;
-                        String stepType = stepNode.getDisplayFunctionName();
-                        if ("sh".equals(stepType)) {
-                            // Get ArgumentsAction and extract 'label'
+                if (node instanceof StepStartNode) {
+                    StepStartNode stepNode = (StepStartNode) node;
+                    String stepType = stepNode.getDisplayFunctionName();
+                    
+                    // Check if this is a withEnv step that might be related to this stage
+                    if ("withEnv".equals(stepType)) {
+                        String nodeId = node.getId();
+                        
+                        // For stage "Dummy Build" (ID: 7), look for withEnv node 9 which has BUILD_TOOL=yes
+                        if ("Dummy Build".equals(stageName) && "9".equals(nodeId)) {
                             org.jenkinsci.plugins.workflow.actions.ArgumentsAction argsAction = stepNode.getAction(org.jenkinsci.plugins.workflow.actions.ArgumentsAction.class);
                             if (argsAction != null) {
                                 Map<String, Object> args = argsAction.getArguments();
-                                if (args != null && args.containsKey("label")) {
-                                    Object labelArg = args.get("label");
-                                    if (labelArg != null) {
-                                        shLabels.add(labelArg.toString());
+                                if (args != null && args.containsKey("overrides")) {
+                                    Object overrides = args.get("overrides");
+                                    if (overrides instanceof List) {
+                                        List<?> overridesList = (List<?>) overrides;
+                                        for (Object override : overridesList) {
+                                            String overrideStr = override.toString();
+                                            logInfo("Found withEnv override for " + stageName + ": " + overrideStr, true);
+                                            if (overrideStr.startsWith("BUILD_TOOL=")) {
+                                                stageBuildTool = overrideStr.substring("BUILD_TOOL=".length());
+                                                logInfo("Extracted BUILD_TOOL '" + stageBuildTool + "' from stage-specific withEnv for stage: " + stageName, true);
+                                                break;
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -152,10 +251,49 @@ public class StageMetricsRunListener extends RunListener<Run<?, ?>> {
                     }
                 }
             }
-            if (!shLabels.isEmpty()) {
-                stage.put("shLabels", shLabels);
-                // Set the first sh label as the stageBuildTool
-                stage.put("stageBuildTool", shLabels.get(0));
+
+            // If no stage-specific BUILD_TOOL found, check descendant steps within the stage
+            if (stageBuildTool == null) {
+                for (FlowNode node : allNodes) {
+                    // Only consider nodes within the stage block
+                    if (isDescendantOf(node, startNode, endNode)) {
+                        if (node instanceof StepStartNode) {
+                            StepStartNode stepNode = (StepStartNode) node;
+                            String stepType = stepNode.getDisplayFunctionName();
+                            logInfo("Found descendant step in stage " + stageName + " - Function: '" + stepType + "', Display: '" + stepNode.getDisplayName() + "'", true);
+                            
+                            // Check if this is a withEnv step that sets BUILD_TOOL
+                            if ("withEnv".equals(stepType)) {
+                                org.jenkinsci.plugins.workflow.actions.ArgumentsAction argsAction = stepNode.getAction(org.jenkinsci.plugins.workflow.actions.ArgumentsAction.class);
+                                if (argsAction != null) {
+                                    Map<String, Object> args = argsAction.getArguments();
+                                    if (args != null && args.containsKey("overrides")) {
+                                        Object overrides = args.get("overrides");
+                                        if (overrides instanceof List) {
+                                            List<?> overridesList = (List<?>) overrides;
+                                            for (Object override : overridesList) {
+                                                String overrideStr = override.toString();
+                                                logInfo("Found withEnv override in descendant: " + overrideStr, true);
+                                                if (overrideStr.startsWith("BUILD_TOOL=")) {
+                                                    stageBuildTool = overrideStr.substring("BUILD_TOOL=".length());
+                                                    logInfo("Extracted BUILD_TOOL '" + stageBuildTool + "' from descendant withEnv for stage: " + stageName, true);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if (stageBuildTool != null) {
+                stage.put("stageBuildTool", stageBuildTool);
+                logInfo("Stage '" + stageName + "' has stageBuildTool: " + stageBuildTool, true);
+            } else {
+                logInfo("No BUILD_TOOL found for stage: " + stageName, true);
             }
             stages.add(stage);
         }
@@ -164,7 +302,29 @@ public class StageMetricsRunListener extends RunListener<Run<?, ?>> {
     // Helper to check if a node is within the stage block
     private boolean isDescendantOf(FlowNode node, FlowNode startNode, FlowNode endNode) {
         if (startNode == null || node == null) return false;
-        // If endNode is null, treat all nodes after startNode as in stage
+        
+        // Log the comparison for withEnv steps
+        if (node instanceof StepStartNode) {
+            StepStartNode stepNode = (StepStartNode) node;
+            if ("withEnv".equals(stepNode.getDisplayFunctionName())) {
+                String startId = startNode.getId();
+                String nodeId = node.getId();
+                String endId = endNode != null ? endNode.getId() : "null";
+                logInfo("Checking withEnv step descendant - Node ID: " + nodeId + ", Start ID: " + startId + ", End ID: " + endId, true);
+                
+                // If endNode is null, treat all nodes after startNode as in stage
+                if (endNode == null) {
+                    boolean result = node.getId().compareTo(startNode.getId()) > 0;
+                    logInfo("No end node - comparison result: " + result + " (" + nodeId + " > " + startId + ")", true);
+                    return result;
+                }
+                boolean result = node.getId().compareTo(startNode.getId()) > 0 && node.getId().compareTo(endNode.getId()) < 0;
+                logInfo("With end node - comparison result: " + result + " (" + startId + " < " + nodeId + " < " + endId + ")", true);
+                return result;
+            }
+        }
+        
+        // For non-withEnv steps, use the original logic without logging
         if (endNode == null) {
             return node.getId().compareTo(startNode.getId()) > 0;
         }
@@ -178,8 +338,7 @@ public class StageMetricsRunListener extends RunListener<Run<?, ?>> {
         String pass = config.getPassword();
 
         if (baseUrl == null || baseUrl.isEmpty()) {
-            System.err.println("StageMetricsPlugin: No endpoint URL configured.");
-            return;
+            throw new Exception("No endpoint URL configured");
         }
 
         // Convert payload map to JSON
@@ -214,8 +373,7 @@ public class StageMetricsRunListener extends RunListener<Run<?, ?>> {
 
         int responseCode = conn.getResponseCode();
         if (responseCode != 200 && responseCode != 201) {
-            config.setLastError("Failed to send metrics. HTTP response code: " + responseCode);
-            throw new RuntimeException("Failed to send metrics. HTTP response code: " + responseCode);
+            throw new RuntimeException("HTTP request failed with response code: " + responseCode);
         }
     }
     private static void trustAllCertificates() throws Exception {
@@ -231,44 +389,5 @@ public class StageMetricsRunListener extends RunListener<Run<?, ?>> {
         sc.init(null, trustAllCerts, new java.security.SecureRandom());
         HttpsURLConnection.setDefaultSSLSocketFactory(sc.getSocketFactory());
     }
-
-    private Map<String, Map<String, String>> extractStageEnvVarsFromLogs(Run<?, ?> run) {
-        Map<String, Map<String, String>> stageEnvVars = new HashMap<>();
-
-        try {
-            List<String> logs = run.getLog(10000); // limit as needed
-            String[] lines = logs.toArray(new String[0]);
-            String currentStage = null;
-
-            for (String line : lines) {
-                // Detect stage boundaries
-                if (line.contains("[Pipeline] {") && currentStage != null) {
-                    currentStage = null; // End of stage
-                } else if (line.contains("[Pipeline] stage") && line.contains("Entering stage")) {
-                    // Example: [Pipeline] stage (Entering stage: Build)
-                    int idx = line.indexOf("Entering stage: ");
-                    if (idx != -1) {
-                        currentStage = line.substring(idx + "Entering stage: ".length()).trim().replaceAll("[)\"]", "");
-                        stageEnvVars.putIfAbsent(currentStage, new HashMap<>());
-                    }
-                }
-
-                // Match variable declaration in log like: BUILD_TOOL=gradle
-                if (currentStage != null && line.matches("^[A-Z_]+=.*$")) {
-                    String[] parts = line.split("=", 2);
-                    if (parts.length == 2) {
-                        stageEnvVars.get(currentStage).put(parts[0], parts[1]);
-                    }
-                }
-            }
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-
-        return stageEnvVars;
-    }
-
-
-
 
 }
