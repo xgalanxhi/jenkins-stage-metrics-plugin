@@ -312,23 +312,51 @@ public class StageMetricsRunListener extends RunListener<Run<?, ?>> {
                 String endId = endNode != null ? endNode.getId() : "null";
                 logInfo("Checking withEnv step descendant - Node ID: " + nodeId + ", Start ID: " + startId + ", End ID: " + endId, true);
                 
-                // If endNode is null, treat all nodes after startNode as in stage
-                if (endNode == null) {
-                    boolean result = node.getId().compareTo(startNode.getId()) > 0;
-                    logInfo("No end node - comparison result: " + result + " (" + nodeId + " > " + startId + ")", true);
+                // Convert string IDs to integers for proper numeric comparison
+                try {
+                    int startIdInt = Integer.parseInt(startId);
+                    int nodeIdInt = Integer.parseInt(nodeId);
+                    
+                    // If endNode is null, treat all nodes after startNode as in stage
+                    if (endNode == null) {
+                        boolean result = nodeIdInt > startIdInt;
+                        logInfo("No end node - comparison result: " + result + " (" + nodeIdInt + " > " + startIdInt + ")", true);
+                        return result;
+                    }
+                    
+                    int endIdInt = Integer.parseInt(endId);
+                    boolean result = nodeIdInt > startIdInt && nodeIdInt < endIdInt;
+                    logInfo("With end node - comparison result: " + result + " (" + startIdInt + " < " + nodeIdInt + " < " + endIdInt + ")", true);
                     return result;
+                } catch (NumberFormatException e) {
+                    // Fallback to string comparison if parsing fails
+                    logInfo("Failed to parse node IDs as integers, using string comparison", true);
+                    if (endNode == null) {
+                        return node.getId().compareTo(startNode.getId()) > 0;
+                    }
+                    return node.getId().compareTo(startNode.getId()) > 0 && node.getId().compareTo(endNode.getId()) < 0;
                 }
-                boolean result = node.getId().compareTo(startNode.getId()) > 0 && node.getId().compareTo(endNode.getId()) < 0;
-                logInfo("With end node - comparison result: " + result + " (" + startId + " < " + nodeId + " < " + endId + ")", true);
-                return result;
             }
         }
         
-        // For non-withEnv steps, use the original logic without logging
-        if (endNode == null) {
-            return node.getId().compareTo(startNode.getId()) > 0;
+        // For non-withEnv steps, use numeric comparison
+        try {
+            int startIdInt = Integer.parseInt(startNode.getId());
+            int nodeIdInt = Integer.parseInt(node.getId());
+            
+            if (endNode == null) {
+                return nodeIdInt > startIdInt;
+            }
+            
+            int endIdInt = Integer.parseInt(endNode.getId());
+            return nodeIdInt > startIdInt && nodeIdInt < endIdInt;
+        } catch (NumberFormatException e) {
+            // Fallback to string comparison if parsing fails
+            if (endNode == null) {
+                return node.getId().compareTo(startNode.getId()) > 0;
+            }
+            return node.getId().compareTo(startNode.getId()) > 0 && node.getId().compareTo(endNode.getId()) < 0;
         }
-        return node.getId().compareTo(startNode.getId()) > 0 && node.getId().compareTo(endNode.getId()) < 0;
     }
 
     private void sendMetrics(Map<String, Object> payloadData) throws Exception {
