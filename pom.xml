@@ -122,7 +122,7 @@
     <dependency>
       <groupId>io.jenkins.plugins</groupId>
       <artifactId>asm-api</artifactId>
-      <version>9.7-33.v4d23ef79fcc8</version>
+      <version>9.8-163.vb_2a_96d3f9c3c</version>
     </dependency>
   </dependencies>
 
