@@ -15,9 +15,11 @@ import java.util.*;
 import java.util.logging.Logger;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.jenkinsci.plugins.workflow.actions.ErrorAction;
 import org.jenkinsci.plugins.workflow.actions.TimingAction;
 import org.jenkinsci.plugins.workflow.cps.nodes.StepStartNode;
 import org.jenkinsci.plugins.workflow.graph.BlockEndNode;
+import org.jenkinsci.plugins.workflow.graph.FlowEndNode;
 import org.jenkinsci.plugins.workflow.flow.FlowExecution;
 import org.jenkinsci.plugins.workflow.graph.FlowNode;
 import org.jenkinsci.plugins.workflow.graphanalysis.DepthFirstScanner;
@@ -67,19 +69,29 @@ public class StageMetricsRunListener extends RunListener<Run<?, ?>> {
             
             logInfo("Collected " + stageData.size() + " stages for processing", true);
             
-            ParametersAction parameters = run.getAction(ParametersAction.class);
+            // Get environment variables
             EnvVars env = run.getEnvironment(listener);
             String jobUrl = env.get("JOB_URL");
-            for (Action a : run.getAllActions()) {
-                LOGGER.info("Action class: " + a.getClass().getName());
-            }
-            String buildTool = "unknown";
-            if (parameters != null) {
-                ParameterValue value = parameters.getParameter("BUILD_TOOL");
-                if (value != null && value.getValue() != null) {
-                    buildTool = value.getValue().toString();
+            
+            // Debug: Log environment variables that contain BUILD_TOOL
+            logInfo("=== Environment Variables Debug ===", true);
+            for (Map.Entry<String, String> entry : env.entrySet()) {
+                if (entry.getKey().contains("BUILD_TOOL") || entry.getKey().contains("TOOL")) {
+                    logInfo("Env Var: " + entry.getKey() + " = " + entry.getValue(), true);
                 }
             }
+            logInfo("=== End Environment Variables Debug ===", true);
+            
+            // Extract buildTool from pipeline-level withEnv instead of environment variables
+            String buildTool = extractPipelineBuildTool(execution);
+            if (buildTool == null || buildTool.isEmpty()) {
+                // Fallback to environment variable if withEnv extraction fails
+                buildTool = env.get("BUILD_TOOL");
+                if (buildTool == null || buildTool.isEmpty()) {
+                    buildTool = "unknown";
+                }
+            }
+            logInfo("Extracted pipeline buildTool: " + buildTool, true);
 
             Map<String, Object> payload = new HashMap<>();
             payload.put("runId", run.getId());
@@ -104,6 +116,97 @@ public class StageMetricsRunListener extends RunListener<Run<?, ?>> {
             logAndAppendError("Failed to process stage metrics: " + e.getMessage());
             listener.getLogger().println("Failed to send stage metrics: " + e.getMessage());
         }
+    }
+
+    /**
+     * Extract the pipeline-level BUILD_TOOL from withEnv nodes that are not within any stage
+     */
+    private String extractPipelineBuildTool(FlowExecution execution) {
+        try {
+            DepthFirstScanner scanner = new DepthFirstScanner();
+            List<FlowNode> allNodes = scanner.allNodes(execution);
+            
+            // Find all stage start nodes first
+            Set<String> stageNodeIds = new HashSet<>();
+            Map<String, String> stageEndNodeIds = new HashMap<>();
+            
+            for (FlowNode node : allNodes) {
+                if (node instanceof StepStartNode) {
+                    StepStartNode stepNode = (StepStartNode) node;
+                    if ("stage".equals(stepNode.getDisplayFunctionName())) {
+                        stageNodeIds.add(node.getId());
+                        
+                        // Find the end node for this stage
+                        for (FlowNode endNode : allNodes) {
+                            if (endNode instanceof BlockEndNode && ((BlockEndNode<?>) endNode).getStartNode().equals(node)) {
+                                stageEndNodeIds.put(node.getId(), endNode.getId());
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Now find withEnv nodes that are NOT within any stage (pipeline-level)
+            for (FlowNode node : allNodes) {
+                if (node instanceof StepStartNode) {
+                    StepStartNode stepNode = (StepStartNode) node;
+                    if ("withEnv".equals(stepNode.getDisplayFunctionName())) {
+                        
+                        // Check if this withEnv node is within any stage
+                        boolean isWithinStage = false;
+                        for (String stageStartId : stageNodeIds) {
+                            String stageEndId = stageEndNodeIds.get(stageStartId);
+                            
+                            try {
+                                int nodeIdInt = Integer.parseInt(node.getId());
+                                int stageStartIdInt = Integer.parseInt(stageStartId);
+                                int stageEndIdInt = stageEndId != null ? Integer.parseInt(stageEndId) : Integer.MAX_VALUE;
+                                
+                                if (nodeIdInt > stageStartIdInt && nodeIdInt < stageEndIdInt) {
+                                    isWithinStage = true;
+                                    break;
+                                }
+                            } catch (NumberFormatException e) {
+                                // Fallback to string comparison
+                                if (stageEndId != null) {
+                                    if (node.getId().compareTo(stageStartId) > 0 && node.getId().compareTo(stageEndId) < 0) {
+                                        isWithinStage = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // If this withEnv is not within any stage, it's pipeline-level
+                        if (!isWithinStage) {
+                            org.jenkinsci.plugins.workflow.actions.ArgumentsAction argsAction = stepNode.getAction(org.jenkinsci.plugins.workflow.actions.ArgumentsAction.class);
+                            if (argsAction != null) {
+                                Map<String, Object> args = argsAction.getArguments();
+                                if (args != null && args.containsKey("overrides")) {
+                                    Object overrides = args.get("overrides");
+                                    if (overrides instanceof List) {
+                                        List<?> overridesList = (List<?>) overrides;
+                                        for (Object override : overridesList) {
+                                            String overrideStr = override.toString();
+                                            if (overrideStr.startsWith("BUILD_TOOL=")) {
+                                                String pipelineBuildTool = overrideStr.substring("BUILD_TOOL=".length());
+                                                logInfo("Found pipeline-level BUILD_TOOL from withEnv node " + node.getId() + ": " + pipelineBuildTool, true);
+                                                return pipelineBuildTool;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            logInfo("Failed to extract pipeline BUILD_TOOL from withEnv nodes: " + e.getMessage(), true);
+        }
+        
+        return null;
     }
 
     private void collectStageMetrics(FlowExecution execution, List<Map<String, Object>> stages) throws Exception {
@@ -206,10 +309,15 @@ public class StageMetricsRunListener extends RunListener<Run<?, ?>> {
                 }
             }
 
+            // Determine stage status
+            String stageStatus = determineStageStatus(startNode, endNode, allNodes);
+            logInfo("Stage '" + stageName + "' status: " + stageStatus, true);
+
             Map<String, Object> stage = new HashMap<>();
             stage.put("name", stageName);
             stage.put("startTimeMillis", startTime);
             stage.put("durationMillis", duration);
+            stage.put("status", stageStatus);
 
             // Collect build tool from stage environment or descendant steps
             String stageBuildTool = null;
@@ -297,6 +405,49 @@ public class StageMetricsRunListener extends RunListener<Run<?, ?>> {
             }
             stages.add(stage);
         }
+    }
+
+    /**
+     * Determines the status of a stage based on its start node, end node, and execution flow
+     */
+    private String determineStageStatus(FlowNode startNode, FlowNode endNode, List<FlowNode> allNodes) {
+        if (endNode == null) {
+            // Stage didn't complete normally - likely aborted or pipeline failed
+            return "ABORTED";
+        }
+
+        // Check if the end node or any node within the stage has an error
+        ErrorAction errorAction = endNode.getAction(ErrorAction.class);
+        if (errorAction != null) {
+            logInfo("Stage end node has error: " + errorAction.getError().getMessage(), true);
+            return "FAILURE";
+        }
+
+        // Check for errors in any nodes within the stage
+        for (FlowNode node : allNodes) {
+            if (isDescendantOf(node, startNode, endNode)) {
+                ErrorAction nodeError = node.getAction(ErrorAction.class);
+                if (nodeError != null) {
+                    logInfo("Found error in stage descendant node " + node.getId() + ": " + nodeError.getError().getMessage(), true);
+                    return "FAILURE";
+                }
+                
+                // Also check if this is an end node that represents failure
+                if (node instanceof FlowEndNode) {
+                    FlowEndNode flowEndNode = (FlowEndNode) node;
+                    if (flowEndNode.getError() != null) {
+                        logInfo("Found FlowEndNode with error in stage: " + flowEndNode.getError(), true);
+                        return "FAILURE";
+                    }
+                }
+            }
+        }
+
+        // Check if the stage was skipped (common in conditional stages)
+        // This is more complex and would require checking for specific patterns
+        // For now, we'll assume if we reach here, the stage succeeded
+        
+        return "SUCCESS";
     }
 
     // Helper to check if a node is within the stage block
