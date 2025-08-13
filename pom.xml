@@ -18,7 +18,7 @@
 
   <name>Stage Metrics Plugin</name>
   <description>Captures and sends pipeline stage metrics including duration, status, and build tools to external analytics systems.</description>
-  <url>https://github.com/your-username/jenkins-stage-metrics-plugin</url>
+  <url>https://github.com/xgalanxhi/jenkins-stage-metrics-plugin</url>
   
   <licenses>
     <license>
@@ -37,9 +37,9 @@
   </developers>
 
   <scm>
-    <connection>scm:git:https://github.com/your-username/jenkins-stage-metrics-plugin.git</connection>
-    <developerConnection>scm:git:git@github.com:your-username/jenkins-stage-metrics-plugin.git</developerConnection>
-    <url>https://github.com/your-username/jenkins-stage-metrics-plugin</url>
+    <connection>scm:git:https://github.com/xgalanxhi/jenkins-stage-metrics-plugin.git</connection>
+    <developerConnection>scm:git:git@github.com:xgalanxhi/jenkins-stage-metrics-plugin.git</developerConnection>
+    <url>https://github.com/xgalanxhi/jenkins-stage-metrics-plugin</url>
     <tag>HEAD</tag>
   </scm>
 

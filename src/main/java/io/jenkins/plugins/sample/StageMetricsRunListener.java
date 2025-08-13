@@ -73,6 +73,13 @@ public class StageMetricsRunListener extends RunListener<Run<?, ?>> {
             EnvVars env = run.getEnvironment(listener);
             String jobUrl = env.get("JOB_URL");
             
+            // Get controller name from configuration, with fallback
+            String controllerName = config.getControllerName();
+            if (controllerName == null || controllerName.trim().isEmpty()) {
+                controllerName = "jenkins-controller"; // default fallback
+            }
+            logInfo("Using configured controller name: " + controllerName, true);
+            
             // Debug: Log environment variables that contain BUILD_TOOL
             logInfo("=== Environment Variables Debug ===", true);
             for (Map.Entry<String, String> entry : env.entrySet()) {
@@ -98,6 +105,7 @@ public class StageMetricsRunListener extends RunListener<Run<?, ?>> {
             payload.put("jobName", run.getParent().getFullName());
             payload.put("jobUrl", jobUrl != null ? jobUrl : "unknown");
             payload.put("buildTool", buildTool);
+            payload.put("controllerName", controllerName);
 
             for (Map<String, Object> stage : stageData) {
                 Map<String, Object> stagePayload = new HashMap<>(payload); // clone the pipeline context
