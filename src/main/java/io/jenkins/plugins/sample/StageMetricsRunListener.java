@@ -235,19 +235,19 @@ public class StageMetricsRunListener extends RunListener<Run<?, ?>> {
                 logInfo("StepNode - Function: '" + functionName + "', Display: '" + displayName + "', ID: " + node.getId(), true);
                 
                 // Check if this could be an sh step with arguments
-                if (stepNode.getAction(org.jenkinsci.plugins.workflow.actions.ArgumentsAction.class) != null) {
                     org.jenkinsci.plugins.workflow.actions.ArgumentsAction argsAction = stepNode.getAction(org.jenkinsci.plugins.workflow.actions.ArgumentsAction.class);
-                    Map<String, Object> args = argsAction.getArguments();
-                    if (args != null && !args.isEmpty()) {
-                        logInfo("  -> Args: " + args.toString(), true);
-                        if (args.containsKey("label")) {
-                            logInfo("  -> HAS LABEL: " + args.get("label"), true);
-                        }
-                        if (args.containsKey("script")) {
-                            logInfo("  -> HAS SCRIPT: " + args.get("script"), true);
+                    if (argsAction != null) {
+                        Map<String, Object> args = argsAction.getArguments();
+                        if (args != null && !args.isEmpty()) {
+                            logInfo("  -> Args: " + args.toString(), true);
+                            if (args.containsKey("label")) {
+                                logInfo("  -> HAS LABEL: " + args.get("label"), true);
+                            }
+                            if (args.containsKey("script")) {
+                                logInfo("  -> HAS SCRIPT: " + args.get("script"), true);
+                            }
                         }
                     }
-                }
             }
         }
         logInfo("=== END DEBUGGING ===", true);
@@ -298,9 +298,14 @@ public class StageMetricsRunListener extends RunListener<Run<?, ?>> {
             }
 
             long startTime = TimingAction.getStartTime(startNode);
-            long duration = (endNode != null)
-                    ? TimingAction.getStartTime(endNode) - startTime
-                    : 0;
+            long duration;
+            if (endNode != null) {
+                duration = TimingAction.getStartTime(endNode) - startTime;
+                // ... use endNode ...
+            } else {
+                duration = 0;
+                // ... handle the case where endNode is null ...s
+            }
 
             // Get the proper stage name from arguments
             String stageName = startNode.getDisplayName(); // fallback
@@ -560,7 +565,13 @@ public class StageMetricsRunListener extends RunListener<Run<?, ?>> {
 
         int responseCode = conn.getResponseCode();
         if (responseCode != 200 && responseCode != 201) {
-            throw new RuntimeException("HTTP request failed with response code: " + responseCode);
+            // Log the exact POST request and payload to the last error box
+            String errorDetails = "HTTP request failed with response code: " + responseCode +
+                "\nPOST URL: " + fullUrl +
+                "\nPOST payload: " + payloadJson;
+            StageMetricsConfiguration configLog = StageMetricsConfiguration.get();
+            configLog.appendToLastError("[" + new Date() + "] " + errorDetails);
+            throw new RuntimeException(errorDetails);
         }
     }
     private static void trustAllCertificates() throws Exception {
