@@ -32,22 +32,26 @@ import javax.net.ssl.X509TrustManager;
 
 @Extension
 public class StageMetricsRunListener extends RunListener<Run<?, ?>> {
+    // Executor for async HTTP requests
+    private static final java.util.concurrent.ExecutorService metricsExecutor = java.util.concurrent.Executors.newCachedThreadPool();
     private static final Logger LOGGER = Logger.getLogger(StageMetricsRunListener.class.getName());
 
     // Helper method to log both to Jenkins logs and append to lastError field
     private void logAndAppendError(String message) {
-        StageMetricsConfiguration config = StageMetricsConfiguration.get();
-        LOGGER.warning(message);
-        config.appendToLastError("[" + new Date() + "] " + message);
+    // DEBUG LOGGING DISABLED
+    // StageMetricsConfiguration config = StageMetricsConfiguration.get();
+    // LOGGER.warning(message);
+    // config.appendToLastError("[" + new Date() + "] " + message);
     }
     
     // Helper method to log info messages and optionally append to lastError
     private void logInfo(String message, boolean appendToError) {
-        LOGGER.info(message);
-        if (appendToError) {
-            StageMetricsConfiguration config = StageMetricsConfiguration.get();
-            config.appendToLastError("[" + new Date() + "] " + message);
-        }
+    // DEBUG LOGGING DISABLED
+    // LOGGER.info(message);
+    // if (appendToError) {
+    //     StageMetricsConfiguration config = StageMetricsConfiguration.get();
+    //     config.appendToLastError("[" + new Date() + "] " + message);
+    // }
     }
 
     @Override
@@ -62,7 +66,7 @@ public class StageMetricsRunListener extends RunListener<Run<?, ?>> {
 
         try {
             // Clear previous errors when starting a new run
-            config.clearLastError();
+            //config.clearLastError();
             
             List<Map<String, Object>> stageData = new ArrayList<>();
             collectStageMetrics(execution, stageData);
@@ -524,55 +528,61 @@ public class StageMetricsRunListener extends RunListener<Run<?, ?>> {
     }
 
     private void sendMetrics(Map<String, Object> payloadData) throws Exception {
-        StageMetricsConfiguration config = StageMetricsConfiguration.get();
-        String baseUrl = config.getEndpointUrl();
-        String user = config.getUsername();
-        String pass = config.getPassword();
+        metricsExecutor.submit(() -> {
+            try {
+                StageMetricsConfiguration config = StageMetricsConfiguration.get();
+                String baseUrl = config.getEndpointUrl();
+                String user = config.getUsername();
+                String pass = config.getPassword();
 
-        if (baseUrl == null || baseUrl.isEmpty()) {
-            throw new Exception("No endpoint URL configured");
-        }
+                if (baseUrl == null || baseUrl.isEmpty()) {
+                    throw new Exception("No endpoint URL configured");
+                }
 
-        // Convert payload map to JSON
-        ObjectMapper mapper = new ObjectMapper();
-        String payloadJson = mapper.writeValueAsString(payloadData);
+                // Convert payload map to JSON
+                ObjectMapper mapper = new ObjectMapper();
+                String payloadJson = mapper.writeValueAsString(payloadData);
 
-        // Encode the JSON payload to be used in query param
-        String encodedPayload = URLEncoder.encode(payloadJson, StandardCharsets.UTF_8);
+                // Encode the JSON payload to be used in query param
+                String encodedPayload = URLEncoder.encode(payloadJson, StandardCharsets.UTF_8);
 
-        String fullUrl = baseUrl + "/rest/v1.0/objects?request=sendReportingData&payload=" + encodedPayload + "&reportObjectTypeName=ci_metrics";
+                String fullUrl = baseUrl + "/rest/v1.0/objects?request=sendReportingData&payload=" + encodedPayload + "&reportObjectTypeName=ci_metrics";
 
-        if (config.isTrustSelfSigned()) {
-            trustAllCertificates();
-        }
+                if (config.isTrustSelfSigned()) {
+                    trustAllCertificates();
+                }
 
-        URL url = new URL(fullUrl);
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        String encoded = Base64.getEncoder().encodeToString((user + ":" + pass).getBytes(StandardCharsets.UTF_8));
-        conn.setRequestProperty("Authorization", "Basic " + encoded);
-        if (conn instanceof HttpsURLConnection && config.isTrustSelfSigned()) {
-            ((HttpsURLConnection) conn).setHostnameVerifier((hostname, session) -> true);
-        }
+                URL url = new URL(fullUrl);
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                String encoded = Base64.getEncoder().encodeToString((user + ":" + pass).getBytes(StandardCharsets.UTF_8));
+                conn.setRequestProperty("Authorization", "Basic " + encoded);
+                if (conn instanceof HttpsURLConnection && config.isTrustSelfSigned()) {
+                    ((HttpsURLConnection) conn).setHostnameVerifier((hostname, session) -> true);
+                }
 
-        conn.setRequestMethod("POST");
-        conn.setRequestProperty("accept", "application/json");
-        conn.setRequestProperty("Content-Type", "application/json");
-        conn.setDoOutput(true);
+                conn.setRequestMethod("POST");
+                conn.setRequestProperty("accept", "application/json");
+                conn.setRequestProperty("Content-Type", "application/json");
+                conn.setDoOutput(true);
 
-        try (OutputStream os = conn.getOutputStream()) {
-            os.write("{}".getBytes(StandardCharsets.UTF_8));
-        }
+                try (OutputStream os = conn.getOutputStream()) {
+                    os.write("{}".getBytes(StandardCharsets.UTF_8));
+                }
 
-        int responseCode = conn.getResponseCode();
-        if (responseCode != 200 && responseCode != 201) {
-            // Log the exact POST request and payload to the last error box
-            String errorDetails = "HTTP request failed with response code: " + responseCode +
-                "\nPOST URL: " + fullUrl +
-                "\nPOST payload: " + payloadJson;
-            StageMetricsConfiguration configLog = StageMetricsConfiguration.get();
-            configLog.appendToLastError("[" + new Date() + "] " + errorDetails);
-            throw new RuntimeException(errorDetails);
-        }
+                int responseCode = conn.getResponseCode();
+                if (responseCode != 200 && responseCode != 201) {
+                    // Log the exact POST request and payload to the last error box
+                    String errorDetails = "HTTP request failed with response code: " + responseCode +
+                        "\nPOST URL: " + fullUrl +
+                        "\nPOST payload: " + payloadJson;
+                    StageMetricsConfiguration configLog = StageMetricsConfiguration.get();
+                    configLog.appendToLastError("[" + new Date() + "] " + errorDetails);
+                }
+            } catch (Exception e) {
+                StageMetricsConfiguration configLog = StageMetricsConfiguration.get();
+                configLog.appendToLastError("[" + new Date() + "] Async sendMetrics error: " + e.getMessage());
+            }
+        });
     }
     private static void trustAllCertificates() throws Exception {
         TrustManager[] trustAllCerts = new TrustManager[]{
